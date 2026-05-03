@@ -1,0 +1,62 @@
+name: OCI Retry Singapore
+
+on:
+  schedule:
+    - cron: '*/6 18-21 * * *'
+  workflow_dispatch:
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install OCI CLI
+        run: pip install oci-cli --quiet
+
+      - name: Configure OCI
+        run: |
+          mkdir -p ~/.oci
+          printf '%s\n' "${{ secrets.OCI_PRIVATE_KEY }}" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+          printf '[DEFAULT]\nuser=%s\nfingerprint=%s\ntenancy=%s\nregion=%s\nkey_file=%s\n' \
+            "${{ secrets.OCI_USER }}" \
+            "${{ secrets.OCI_FINGERPRINT }}" \
+            "${{ secrets.OCI_TENANCY }}" \
+            "ap-singapore-1" \
+            "/home/runner/.oci/oci_api_key.pem" > ~/.oci/config
+          chmod 600 ~/.oci/config
+
+      - name: Try launch instance
+        shell: bash
+        run: |
+          set +e
+          echo "${{ secrets.OCI_SSH_PUBLIC_KEY }}" > /tmp/ssh_key.pub
+          for i in 1 2 3; do
+            echo "=== Singapore Attempt $i ==="
+            OUTPUT=$(oci compute instance launch \
+              --region ap-singapore-1 \
+              --compartment-id "${{ secrets.OCI_TENANCY }}" \
+              --availability-domain "eqXR:AP-SINGAPORE-1-AD-1" \
+              --shape "VM.Standard.E2.1.Micro" \
+              --subnet-id "ocid1.subnet.oc1.ap-singapore-1.aaaaaaaa2g7zteqe6ddrdsdrbhdldcu5dzoqntgy5sgr2b37l7muoyhdymta" \
+              --image-id "ocid1.image.oc1.ap-singapore-1.aaaaaaaais6iilkdolc3kceusso7visvuzfl5fsypg3twr5624o3yuwotv2a" \
+              --assign-public-ip true \
+              --ssh-authorized-keys-file /tmp/ssh_key.pub \
+              --display-name "e2micro-singapore" 2>&1)
+
+            echo "$OUTPUT"
+
+            if echo "$OUTPUT" | grep -q "lifecycle-state"; then
+              echo "SUCCESS! Singapore instance created on attempt $i!"
+              exit 0
+            elif echo "$OUTPUT" | grep -q "Out of host capacity"; then
+              echo "No capacity on attempt $i, waiting 90s..."
+              sleep 90
+            elif echo "$OUTPUT" | grep -q "timed out"; then
+              echo "Timeout on attempt $i, waiting 30s..."
+              sleep 30
+            else
+              echo "Unexpected response, waiting 90s..."
+              sleep 90
+            fi
+          done
+          echo "All attempts done, will retry in 5 mins..."
