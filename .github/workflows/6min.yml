@@ -1,4 +1,4 @@
-name: OCI Retry Singapore
+name: OCI Retry 6min Singapore
 
 on:
   schedule:
