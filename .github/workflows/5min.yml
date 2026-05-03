@@ -71,6 +71,7 @@ jobs:
             echo "$OUTPUT"
             if echo "$OUTPUT" | grep -q "lifecycle-state"; then
               echo "SUCCESS on attempt $i!"
+              echo "CREATED=true" >> $GITHUB_ENV
               exit 0
             elif echo "$OUTPUT" | grep -q "Out of host capacity"; then
               echo "No capacity, waiting 90s..."
@@ -82,7 +83,7 @@ jobs:
           done
 
       - name: Send Gmail notification
-        if: success()
+        if: env.CREATED == 'true'
         run: |
           python3 -c "
           import smtplib
