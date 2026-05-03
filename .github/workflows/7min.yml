@@ -2,7 +2,7 @@ name: OCI Retry 7min Singapore
 
 on:
   schedule:
-    - cron: '*/7 18-21 * * *'
+    - cron: '2-59/7 18-21 * * *'
   workflow_dispatch:
 
 jobs:
