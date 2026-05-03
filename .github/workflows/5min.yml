@@ -1,10 +1,8 @@
 name: OCI Retry Singapore
-
 on:
   schedule:
     - cron: '*/5 18-21 * * *'
   workflow_dispatch:
-
 jobs:
   launch:
     runs-on: ubuntu-latest
@@ -25,6 +23,34 @@ jobs:
             "/home/runner/.oci/oci_api_key.pem" > ~/.oci/config
           chmod 600 ~/.oci/config
 
+      - name: Check if instance already running
+        run: |
+          EXISTING=$(oci compute instance list \
+            --compartment-id "${{ secrets.OCI_TENANCY }}" \
+            --region ap-singapore-1 \
+            --lifecycle-state RUNNING \
+            --display-name "e2micro-singapore" \
+            --query 'data[0].id' \
+            --raw-output 2>/dev/null)
+          if [ -n "$EXISTING" ]; then
+            echo "Instance already running! Exiting."
+            exit 0
+          fi
+
+      - name: Get latest Oracle Linux 8 image
+        run: |
+          IMAGE_ID=$(oci compute image list \
+            --compartment-id "${{ secrets.OCI_TENANCY }}" \
+            --region ap-singapore-1 \
+            --operating-system "Oracle Linux" \
+            --operating-system-version "8" \
+            --shape "VM.Standard.E2.1.Micro" \
+            --sort-by TIMECREATED \
+            --sort-order DESC \
+            --query 'data[0].id' \
+            --raw-output)
+          echo "IMAGE_ID=$IMAGE_ID" >> $GITHUB_ENV
+
       - name: Try launch instance
         shell: bash
         run: |
@@ -38,25 +64,36 @@ jobs:
               --availability-domain "eqXR:AP-SINGAPORE-1-AD-1" \
               --shape "VM.Standard.E2.1.Micro" \
               --subnet-id "ocid1.subnet.oc1.ap-singapore-1.aaaaaaaa2g7zteqe6ddrdsdrbhdldcu5dzoqntgy5sgr2b37l7muoyhdymta" \
-              --image-id "ocid1.image.oc1.ap-singapore-1.aaaaaaaais6iilkdolc3kceusso7visvuzfl5fsypg3twr5624o3yuwotv2a" \
+              --image-id "$IMAGE_ID" \
               --assign-public-ip true \
               --ssh-authorized-keys-file /tmp/ssh_key.pub \
               --display-name "e2micro-singapore" 2>&1)
-
             echo "$OUTPUT"
-
             if echo "$OUTPUT" | grep -q "lifecycle-state"; then
-              echo "SUCCESS! Singapore instance created on attempt $i!"
+              echo "SUCCESS on attempt $i!"
               exit 0
             elif echo "$OUTPUT" | grep -q "Out of host capacity"; then
-              echo "No capacity on attempt $i, waiting 90s..."
+              echo "No capacity, waiting 90s..."
               sleep 90
-            elif echo "$OUTPUT" | grep -q "timed out"; then
-              echo "Timeout on attempt $i, waiting 30s..."
-              sleep 30
             else
-              echo "Unexpected response, waiting 90s..."
+              echo "Waiting 90s..."
               sleep 90
             fi
           done
-          echo "All attempts done, will retry in 5 mins..."
+
+      - name: Send Gmail notification
+        if: success()
+        run: |
+          python3 -c "
+          import smtplib
+          from email.mime.text import MIMEText
+          msg = MIMEText('✅ OCI E2.1 Micro Singapore instance created successfully! Login: ssh -i your-key opc@YOUR_IP')
+          msg['Subject'] = '✅ OCI Singapore Instance Created!'
+          msg['From'] = '${{ secrets.GMAIL_USER }}'
+          msg['To'] = '${{ secrets.EMAIL_TO }}'
+          s = smtplib.SMTP_SSL('smtp.gmail.com', 465)
+          s.login('${{ secrets.GMAIL_USER }}', '${{ secrets.GMAIL_APP_PASSWORD }}')
+          s.sendmail('${{ secrets.GMAIL_USER }}', '${{ secrets.EMAIL_TO }}', msg.as_string())
+          s.quit()
+          print('Email sent!')
+          "
