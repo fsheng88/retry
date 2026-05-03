@@ -1,0 +1,101 @@
+name: OCI Retry 16min Singapore
+
+on:
+  schedule:
+    - cron: '*/16 * * * *'
+  workflow_dispatch:
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install OCI CLI
+        run: pip install oci-cli --quiet
+
+      - name: Configure OCI
+        run: |
+          mkdir -p ~/.oci
+          printf '%s\n' "${{ secrets.OCI_PRIVATE_KEY }}" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+          printf '[DEFAULT]\nuser=%s\nfingerprint=%s\ntenancy=%s\nregion=%s\nkey_file=%s\n' \
+            "${{ secrets.OCI_USER }}" \
+            "${{ secrets.OCI_FINGERPRINT }}" \
+            "${{ secrets.OCI_TENANCY }}" \
+            "ap-singapore-1" \
+            "/home/runner/.oci/oci_api_key.pem" > ~/.oci/config
+          chmod 600 ~/.oci/config
+
+      - name: Check if instance already running
+        run: |
+          EXISTING=$(oci compute instance list \
+            --compartment-id "${{ secrets.OCI_TENANCY }}" \
+            --region ap-singapore-1 \
+            --lifecycle-state RUNNING \
+            --display-name "e2micro-singapore" \
+            --query 'data[0].id' \
+            --raw-output 2>/dev/null)
+          if [ -n "$EXISTING" ]; then
+            echo "Instance already running! Exiting."
+            exit 0
+          fi
+
+      - name: Get latest Oracle Linux 8 image
+        run: |
+          IMAGE_ID=$(oci compute image list \
+            --compartment-id "${{ secrets.OCI_TENANCY }}" \
+            --region ap-singapore-1 \
+            --operating-system "Oracle Linux" \
+            --operating-system-version "8" \
+            --shape "VM.Standard.E2.1.Micro" \
+            --sort-by TIMECREATED \
+            --sort-order DESC \
+            --query 'data[0].id' \
+            --raw-output)
+          echo "IMAGE_ID=$IMAGE_ID" >> $GITHUB_ENV
+
+      - name: Try launch instance
+        shell: bash
+        run: |
+          set +e
+          echo "${{ secrets.OCI_SSH_PUBLIC_KEY }}" > /tmp/ssh_key.pub
+          for i in 1 2 3; do
+            echo "=== Singapore Attempt $i ==="
+            OUTPUT=$(oci compute instance launch \
+              --region ap-singapore-1 \
+              --compartment-id "${{ secrets.OCI_TENANCY }}" \
+              --availability-domain "eqXR:AP-SINGAPORE-1-AD-1" \
+              --shape "VM.Standard.E2.1.Micro" \
+              --subnet-id "ocid1.subnet.oc1.ap-singapore-1.aaaaaaaa2g7zteqe6ddrdsdrbhdldcu5dzoqntgy5sgr2b37l7muoyhdymta" \
+              --image-id "$IMAGE_ID" \
+              --assign-public-ip true \
+              --ssh-authorized-keys-file /tmp/ssh_key.pub \
+              --display-name "e2micro-singapore" 2>&1)
+            echo "$OUTPUT"
+            if echo "$OUTPUT" | grep -q "lifecycle-state"; then
+              echo "SUCCESS on attempt $i!"
+              echo "CREATED=true" >> $GITHUB_ENV
+              exit 0
+            elif echo "$OUTPUT" | grep -q "Out of host capacity"; then
+              echo "No capacity, waiting 90s..."
+              sleep 90
+            else
+              echo "Waiting 90s..."
+              sleep 90
+            fi
+          done
+
+      - name: Send Gmail notification
+        if: env.CREATED == 'true'
+        run: |
+          python3 -c "
+          import smtplib
+          from email.mime.text import MIMEText
+          msg = MIMEText('✅ OCI E2.1 Micro Singapore instance created successfully! Login: ssh -i your-key opc@YOUR_IP')
+          msg['Subject'] = '✅ OCI Singapore Instance Created!'
+          msg['From'] = '${{ secrets.GMAIL_USER }}'
+          msg['To'] = '${{ secrets.EMAIL_TO }}'
+          s = smtplib.SMTP_SSL('smtp.gmail.com', 465)
+          s.login('${{ secrets.GMAIL_USER }}', '${{ secrets.GMAIL_APP_PASSWORD }}')
+          s.sendmail('${{ secrets.GMAIL_USER }}', '${{ secrets.EMAIL_TO }}', msg.as_string())
+          s.quit()
+          print('Email sent!')
+          "
