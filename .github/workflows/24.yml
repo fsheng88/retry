@@ -1,4 +1,4 @@
-name: OCI Retry Singapore
+name: OCI Retry 24hr Singapore
 on:
   schedule:
     - cron: '*/5 * * * *'
